@@ -11,7 +11,13 @@ import com.ems.hr.common.EmployeeRepository;
 import com.ems.security.JwtUtil;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-
+import com.ems.auth.dto.ForgotPasswordRequest;
+import com.ems.auth.dto.VerifyOtpRequest;
+import com.ems.auth.dto.ResetPasswordRequest;
+import com.ems.auth.entity.PasswordResetToken;
+import com.ems.auth.repository.PasswordResetTokenRepository;
+import java.util.List;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -23,17 +29,25 @@ public class AuthService {
     private final JwtUtil                  jwtUtil;
     private final EmployeeProfileRepository employeeProfileRepository;
     private final EmployeeRepository       employeeRepository;
+    private final PasswordResetTokenRepository passwordResetTokenRepository;
+    private final EmailService emailService;
 
-    public AuthService(UserRepository userRepository,
-                       PasswordEncoder passwordEncoder,
-                       JwtUtil jwtUtil,
-                       EmployeeProfileRepository employeeProfileRepository,
-                       EmployeeRepository employeeRepository) {
-        this.userRepository           = userRepository;
-        this.passwordEncoder          = passwordEncoder;
-        this.jwtUtil                  = jwtUtil;
+    public AuthService(
+            UserRepository userRepository,
+            PasswordEncoder passwordEncoder,
+            JwtUtil jwtUtil,
+            EmployeeProfileRepository employeeProfileRepository,
+            EmployeeRepository employeeRepository,
+            PasswordResetTokenRepository passwordResetTokenRepository,
+            EmailService emailService) {
+
+        this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.jwtUtil = jwtUtil;
         this.employeeProfileRepository = employeeProfileRepository;
-        this.employeeRepository       = employeeRepository;
+        this.employeeRepository = employeeRepository;
+        this.passwordResetTokenRepository = passwordResetTokenRepository;
+        this.emailService = emailService;
     }
 
     public LoginResponse login(LoginRequest request) {
@@ -85,9 +99,9 @@ public class AuthService {
 
         Optional<User> userOpt = userRepository.findByEmployeeCode(employeeCode);
 
-        if (userOpt.isEmpty()) {
-            return fail("User not found.");
-        }
+//        if (userOpt.isEmpty()) {
+//            return fail("User not found.");
+//        }
 
         User user = userOpt.get();
 
@@ -149,5 +163,183 @@ public class AuthService {
 
     private LoginResponse fail(String message) {
         return new LoginResponse(message, null, false, null, null, null, null, null);
+    }
+    private final SecureRandom secureRandom = new SecureRandom();
+
+    private String generateOtp() {
+        return String.format("%06d", secureRandom.nextInt(1000000));
+    }
+    
+    public LoginResponse forgotPassword(ForgotPasswordRequest request) {
+
+        if (request.getEmail() == null || request.getEmail().isBlank()) {
+            return fail("Email is required.");
+        }
+
+        var userOpt = userRepository.findByUsernameIgnoreCase(request.getEmail().trim());
+
+        // Prevent email enumeration
+        if (userOpt.isEmpty()) {
+            return new LoginResponse(
+                    "If the email exists, an OTP has been sent.",
+                    null,
+                    true,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+            );
+        }
+
+        User user = userOpt.get();
+        List<PasswordResetToken> activeTokens =
+                passwordResetTokenRepository.findByUserIdAndUsedAtIsNull(user.getId());
+
+        if (!activeTokens.isEmpty()) {
+            LocalDateTime now = LocalDateTime.now();
+
+            for (PasswordResetToken oldToken : activeTokens) {
+                oldToken.setUsedAt(now);
+            }
+
+            passwordResetTokenRepository.saveAll(activeTokens);
+        }
+
+       
+
+        String otp = generateOtp();
+
+        PasswordResetToken token = new PasswordResetToken();
+
+        token.setUserId(user.getId());
+        token.setTokenHash(passwordEncoder.encode(otp));
+        token.setAttempts(0);
+        token.setVerified(false);
+        token.setExpiresAt(LocalDateTime.now().plusMinutes(5));
+
+        passwordResetTokenRepository.save(token);
+
+        emailService.sendOtp(user.getEmail(), otp);
+
+        return new LoginResponse(
+                "OTP has been sent to your email.",
+                null,
+                true,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+    }
+    
+    public LoginResponse verifyOtp(VerifyOtpRequest request) {
+
+        var userOpt = userRepository.findByUsernameIgnoreCase(request.getEmail());
+
+        if (userOpt.isEmpty()) {
+            return fail("Invalid OTP.");
+        }
+
+        User user = userOpt.get();
+
+        var tokenOpt = passwordResetTokenRepository
+                .findTopByUserIdAndUsedAtIsNullOrderByCreatedAtDesc(user.getId());
+
+        if (tokenOpt.isEmpty()) {
+            return fail("OTP not found.");
+        }
+
+        PasswordResetToken token = tokenOpt.get();
+
+        if (token.getUsedAt() != null) {
+            return fail("OTP already used.");
+        }
+
+        if (LocalDateTime.now().isAfter(token.getExpiresAt())) {
+            return fail("OTP has expired.");
+        }
+
+        if (token.getAttempts() >= 5) {
+            return fail("Maximum OTP attempts exceeded.");
+        }
+
+        if (!passwordEncoder.matches(request.getOtp(), token.getTokenHash())) {
+
+            token.setAttempts(token.getAttempts() + 1);
+            passwordResetTokenRepository.save(token);
+
+            return fail("Invalid OTP.");
+        }
+
+        token.setVerified(true);
+
+        passwordResetTokenRepository.save(token);
+
+        return new LoginResponse(
+                "OTP verified successfully.",
+                null,
+                true,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+    }
+    public LoginResponse resetPassword(ResetPasswordRequest request) {
+
+        if (!request.getNewPassword().equals(request.getConfirmPassword())) {
+            return fail("Passwords do not match.");
+        }
+
+        var userOpt = userRepository.findByUsernameIgnoreCase(request.getEmail());
+
+        if (userOpt.isEmpty()) {
+            return fail("User not found.");
+        }
+
+        User user = userOpt.get();
+
+        var tokenOpt = passwordResetTokenRepository
+                .findTopByUserIdAndUsedAtIsNullOrderByCreatedAtDesc(user.getId());
+
+        if (tokenOpt.isEmpty()) {
+            return fail("OTP verification required.");
+        }
+
+        PasswordResetToken token = tokenOpt.get();
+
+        if (!Boolean.TRUE.equals(token.getVerified())) {
+            return fail("OTP verification required.");
+        }
+
+        if (LocalDateTime.now().isAfter(token.getExpiresAt())) {
+            return fail("OTP has expired.");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
+
+        userRepository.save(user);
+
+        token.setUsedAt(LocalDateTime.now());
+
+        passwordResetTokenRepository.save(token);
+
+        return new LoginResponse(
+                "Password reset successfully.",
+                null,
+                true,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+    }
+    public LoginResponse resendOtp(ForgotPasswordRequest request) {
+
+        return forgotPassword(request);
     }
 }
