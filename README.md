@@ -20,7 +20,6 @@ All API routes and paths are **100% identical** — no frontend changes required
 ```
 ems-unified/
 ├── pom.xml
-├── ems_dev_server.py           ← Frontend dev server (port 3000, proxies /api/* to :8080)
 └── src/main/java/com/ems/
     ├── EmsApplication.java     ← @SpringBootApplication entry point
     ├── config/
