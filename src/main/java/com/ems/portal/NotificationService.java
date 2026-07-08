@@ -35,7 +35,7 @@ record NotificationPageResponse(
 ) {}
 
 @Service
-class NotificationService {
+public class NotificationService {
 
     private final InAppNotificationRepository repository;
 
@@ -43,7 +43,7 @@ class NotificationService {
         this.repository = repository;
     }
 
-    NotificationPageResponse list(String employeeCode, int page, int size) {
+    public NotificationPageResponse list(String employeeCode, int page, int size) {
         int safePage = Math.max(page, 0);
         int safeSize = clampSize(size);
         long total = count(employeeCode);
@@ -53,11 +53,11 @@ class NotificationService {
         return new NotificationPageResponse(items, safePage, safeSize, total, totalPages, unread);
     }
 
-    List<NotificationItem> latest(String employeeCode, int limit) {
+    public List<NotificationItem> latest(String employeeCode, int limit) {
         return fetch(employeeCode, 0, clampSize(limit));
     }
 
-    long unreadCount(String employeeCode) {
+    public long unreadCount(String employeeCode) {
         return repository.countByEmployeeCodeAndReadFalse(employeeCode);
     }
 
@@ -71,6 +71,7 @@ class NotificationService {
     }
 
     @Transactional
+	public
     Map<String, Object> markRead(String employeeCode, String messageKey) {
         MessageRef ref = parse(messageKey);
         var opt = repository.findByIdAndEmployeeCode(ref.id(), employeeCode);
